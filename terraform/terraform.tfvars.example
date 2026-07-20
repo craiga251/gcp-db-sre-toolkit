@@ -1,0 +1,5 @@
+# Copy this file to terraform.tfvars and set values appropriately.
+# terraform.tfvars is gitignored to keep personal data out of source control.
+
+project_id = "your-gcp-project-id"
+owner      = "your-name-here"
