@@ -18,7 +18,7 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 - **Infrastructure as Code:** Terraform
 - **CI/CD:** GitHub Actions
 - **Compute:** Cloud Run / Cloud Functions (serverless — TBD during Phase 1)
-- **Database:** Cloud SQL for SQL Server
+- **Database:** Cloud SQL for SQL Server 2022 (Web edition)
 - **Observability:** Cloud Monitoring, Cloud Logging, Grafana Cloud
 - **Scripting:** PowerShell, Python
 - **AI tooling:** GitHub Copilot, LLM APIs for log analysis
@@ -28,7 +28,7 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 0 | ✅ Complete | Foundations and tooling setup (gcloud CLI, project, remote state, Terraform provider) |
-| 1 | ⬜ Not started | Terraform infrastructure provisioning |
+| 1 | 🟡 In progress | Terraform infrastructure provisioning (Cloud SQL done; serverless compute next) |
 | 2 | ⬜ Not started | Git workflow and CI/CD |
 | 3 | ⬜ Not started | SRE automation scripts |
 | 4 | ⬜ Not started | Observability and SLIs |
@@ -70,7 +70,7 @@ gcp-db-sre-toolkit/
 
 > _Full setup instructions will be expanded once Phase 0/1 (project setup and infrastructure provisioning) are complete._
 
-**Current state:** Phase 0 complete. Project, APIs, and GCS remote state are in place; `terraform plan` runs clean against an empty stack. Phase 1 (Cloud SQL) is next.
+**Current state:** Phase 1 in progress. Cloud SQL for SQL Server (Web edition) applies, verifies, and destroys cleanly. To check a running instance, install `scripts/python/requirements.txt`, then run `python scripts/python/verify_connection.py` (arguments are in the script header and come from `terraform output`).
 
 Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 
@@ -88,7 +88,16 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 | GCP project | `gcp-db-sre-toolkit-514321` | Console (one-off) | Under org `craigandersonbus1-org`, region `europe-west2` |
 | GCS bucket (Terraform state) | `gcp-db-sre-toolkit-514321-tfstate` | `gcloud` bootstrap (out-of-band) | Versioned, uniform access, public access prevention; persists between sessions |
 
-No Terraform-managed resources yet. Phase 1 resources are applied, verified, and destroyed each session to control cost.
+| Billing budget | `gcp-db-sre-toolkit guardrail` | `gcloud` (out-of-band) | £25/month, alerts at 50/90/100% + forecast; persists between sessions |
+
+**Terraform-managed** (applied, verified, and destroyed each session to control cost):
+
+| Resource | Name | Notes |
+|----------|------|-------|
+| Cloud SQL for SQL Server | `sql-sre-toolkit-euw2` | SQL Server 2022 Web, `db-custom-1-3840`, zonal, 10 GB SSD (autoresize ≤20 GB), backups, Query Insights. Public IP with no authorized networks: connector/Auth Proxy only. |
+| Database | `sredb` | Application database |
+| Secret Manager secret | `sql-sre-toolkit-euw2-sqlserver-password` | Generated admin password |
+| Project services | sqladmin, secretmanager, cloudtrace | `disable_on_destroy = false` |
 
 ## Design Decisions
 

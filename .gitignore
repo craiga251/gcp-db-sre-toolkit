@@ -31,6 +31,9 @@ ENV/
 *.tfvars
 *.tfvars.json
 crash.log
+# Saved plans can contain secrets in plain text (e.g. generated passwords)
+tfplan
+*.tfplan
 crash.*.log
 override.tf
 override.tf.json

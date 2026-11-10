@@ -1,0 +1,3 @@
+cloud-sql-python-connector[pytds]>=1.23
+google-cloud-secret-manager>=2.32
+pyOpenSSL>=24.0  # required by pytds for TDS-level encryption
