@@ -14,8 +14,8 @@ variable "owner" {
   type        = string
 }
 
-variable "sql_instance_name" {
-  description = "Cloud SQL instance name. Names can't be reused for about a week after deletion, so change this if an apply fails with 'already exists'."
+variable "sql_instance_prefix" {
+  description = "Cloud SQL instance name prefix. A random suffix is appended because Cloud SQL reserves deleted instance names for up to about a week."
   type        = string
   default     = "sql-sre-toolkit-euw2"
 }

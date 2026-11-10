@@ -54,8 +54,19 @@ resource "google_project_service" "apis" {
 # -----------------------------------------------------------------------------
 # Cloud SQL for SQL Server
 # -----------------------------------------------------------------------------
+# Cloud SQL reserves a deleted instance's name for up to about a week, so a
+# fixed name breaks the apply-verify-destroy-rebuild cycle. A random suffix
+# gives each rebuild a fresh name; it stays stable for the life of the stack.
+resource "random_id" "sql_suffix" {
+  byte_length = 2
+
+  keepers = {
+    prefix = var.sql_instance_prefix
+  }
+}
+
 resource "google_sql_database_instance" "sqlserver" {
-  name             = var.sql_instance_name
+  name             = "${var.sql_instance_prefix}-${random_id.sql_suffix.hex}"
   database_version = var.sql_database_version
   region           = var.region
 
@@ -128,7 +139,8 @@ resource "random_password" "sqlserver_admin" {
 }
 
 resource "google_secret_manager_secret" "sqlserver_admin" {
-  secret_id = "${var.sql_instance_name}-sqlserver-password"
+  # Secret names are reusable immediately, so no suffix needed here.
+  secret_id = "${var.sql_instance_prefix}-sqlserver-password"
   labels    = local.common_labels
 
   replication {

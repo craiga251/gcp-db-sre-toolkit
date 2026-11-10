@@ -175,5 +175,6 @@ What it shows:
 ## Next up
 
 - Destroy at end of session; rebuild from scratch next session to prove the whole stack applies cleanly in one pass.
+- **Instance names can't be reused for up to about a week after deletion**, so a fixed name would make next session's rebuild fail with "already exists". The instance name now ends in a `random_id` suffix (`sql-sre-toolkit-euw2-<hex>`), which is new each time the stack is rebuilt and stable while it exists. Scripts take the name from `terraform output sql_connection_name`, so nothing else changes. The Secret Manager secret keeps a fixed name, because secret names are reusable immediately.
 - Remaining Phase 1: serverless compute (Cloud Run vs Cloud Functions), log/metric sinks, architecture diagram.
 - Consider upgrading to the `hashicorp/google` 6.x provider, which drops `require_ssl`.

@@ -94,7 +94,7 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 
 | Resource | Name | Notes |
 |----------|------|-------|
-| Cloud SQL for SQL Server | `sql-sre-toolkit-euw2` | SQL Server 2022 Web, `db-custom-1-3840`, zonal, 10 GB SSD (autoresize ≤20 GB), backups, Query Insights. Public IP with no authorized networks: connector/Auth Proxy only. |
+| Cloud SQL for SQL Server | `sql-sre-toolkit-euw2-<random hex>` | SQL Server 2022 Web, `db-custom-1-3840`, zonal, 10 GB SSD (autoresize ≤20 GB), backups, Query Insights. Public IP with no authorized networks: connector/Auth Proxy only. |
 | Database | `sredb` | Application database |
 | Secret Manager secret | `sql-sre-toolkit-euw2-sqlserver-password` | Generated admin password |
 | Project services | sqladmin, secretmanager, cloudtrace | `disable_on_destroy = false` |
