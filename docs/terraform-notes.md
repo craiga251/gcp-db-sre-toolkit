@@ -149,6 +149,29 @@ Watching `gcloud sql operations list --instance=...` during the apply showed eac
 
 After the upgrade, `terraform plan` showed **no changes**: the code and the real instance match.
 
+## Workload test: Query Insights and a missing index
+
+`scripts/python/generate_load.py` builds `dbo.customers` (20k rows) and `dbo.orders` (500k rows) with **no index on `orders.customer_id`**, then runs a weighted mix of six queries from 4 concurrent workers. Two of them are deliberately bad: a missing-index lookup, and a non-sargable `WHERE LOWER(email) = @p`. The run was 5 minutes of load, then `CREATE INDEX`, then another 5 minutes.
+
+Query Store shows the before and after plans for the same query:
+
+| `orders_by_customer` | Before index | After index |
+|---|---|---|
+| Plan | Clustered Index Scan | Index Seek (`IX_orders_customer_id`) |
+| Server avg duration | 129 ms | **0.35 ms** |
+| Logical reads per execution | 2,731 | **3** |
+| Client-measured avg / p95 | 200 / 451 ms | 76 / 177 ms |
+| Total throughput (all queries) | 28.7/s | **37.3/s (+30%)** |
+
+What it shows:
+
+- **Server time and client time measure different things.** After the fix, the query costs 0.35 ms inside SQL Server, but the client still sees about 76 ms. That remainder is the network round trip from the laptop to London through the connector tunnel; even a primary-key lookup costs about 65 ms from the client. Phase 4 SLIs need both views: server-side time shows how healthy the database is, and client-side time shows what users experience.
+- **One bad query slows everything.** On a 1-vCPU instance the scans were using most of the CPU. Fixing one query raised total throughput by 30% and made unrelated queries faster too (`revenue_by_region` went from 346 to 261 ms server-side).
+- **An index can't fix a non-sargable predicate.** `LOWER(email)` scanned before and after, unchanged at about 110 ms. The fix is rewriting the query, or a persisted computed column with an index on it, not another index.
+- **The driver introduced an implicit conversion.** `pytds` sends Python `str` parameters as `NVARCHAR(MAX)`. Comparing that to a `varchar` column puts `CONVERT_IMPLICIT` in the plan, visible in Query Store for both string-parameter queries. It's the same issue as .NET's `SqlCommand.Parameters.AddWithValue`. It's harmless here, but on an indexed varchar column it can turn a seek into a scan. The fix is on the client: declare parameter types explicitly, or match column and parameter types.
+
+**Query Insights vs native tooling.** Insights showed the load, execution counts and rows per query within minutes. The `sredb` rows initially said "Query text is not available", even though the text was in `sys.dm_exec_sql_text` and Query Store. The probable cause is that Insights shows execution metrics before the normalised query text, but the docs don't confirm this. Insights also recorded Cloud SQL's own activity that is normally hidden: SQL Server Agent jobs in `msdb` being set up straight after the Express → Web upgrade, and a `master.dbo.patch_action_execution_state` merge from the patching agent. Takeaway: Insights is good for "what's hot right now" across a fleet, while Query Store and the DMVs are still where you prove *why*, comparing plans before and after.
+
 ## Next up
 
 - Destroy at end of session; rebuild from scratch next session to prove the whole stack applies cleanly in one pass.
