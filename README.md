@@ -27,7 +27,7 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| 0 | 🟡 In progress | Foundations and tooling setup (gcloud CLI, project, Terraform provider) |
+| 0 | ✅ Complete | Foundations and tooling setup (gcloud CLI, project, remote state, Terraform provider) |
 | 1 | ⬜ Not started | Terraform infrastructure provisioning |
 | 2 | ⬜ Not started | Git workflow and CI/CD |
 | 3 | ⬜ Not started | SRE automation scripts |
@@ -70,12 +70,12 @@ gcp-db-sre-toolkit/
 
 > _Full setup instructions will be expanded once Phase 0/1 (project setup and infrastructure provisioning) are complete._
 
-**Current state:** Phase 0 in progress. No infrastructure provisioned yet.
+**Current state:** Phase 0 complete. Project, APIs, and GCS remote state are in place; `terraform plan` runs clean against an empty stack. Phase 1 (Cloud SQL) is next.
 
 Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 
 1. Clone this repository
-2. Authenticate: `gcloud auth login` and `gcloud auth application-default login`
+2. Authenticate: `gcloud auth login` and `gcloud auth application-default login` (a dedicated `gcloud config configurations create` profile is recommended if you use other GCP accounts)
 3. Create or select a GCP project and note its project ID
 4. Bootstrap a GCS bucket for Terraform remote state (out-of-band, before first `terraform init`)
 5. In the `terraform/` folder, copy `terraform.tfvars.example` to `terraform.tfvars` and set `project_id` and `owner`
@@ -83,7 +83,12 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 
 ## Infrastructure Provisioned
 
-Nothing yet — Phase 0 (tooling and project setup) is in progress.
+| Resource | Name | How it's managed | Notes |
+|----------|------|------------------|-------|
+| GCP project | `gcp-db-sre-toolkit-514321` | Console (one-off) | Under org `craigandersonbus1-org`, region `europe-west2` |
+| GCS bucket (Terraform state) | `gcp-db-sre-toolkit-514321-tfstate` | `gcloud` bootstrap (out-of-band) | Versioned, uniform access, public access prevention; persists between sessions |
+
+No Terraform-managed resources yet. Phase 1 resources are applied, verified, and destroyed each session to control cost.
 
 ## Design Decisions
 

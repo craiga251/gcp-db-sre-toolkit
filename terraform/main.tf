@@ -8,13 +8,14 @@ terraform {
     }
   }
 
-  # Remote state backend to be added once the GCS bootstrap bucket exists
-  # (mirrors the azurerm backend bootstrap in azure-db-sre-toolkit Day 3).
-  #
-  # backend "gcs" {
-  #   bucket = "<bootstrap-bucket-name>"
-  #   prefix = "gcp-db-sre-toolkit"
-  # }
+  # Remote state in a GCS bucket bootstrapped out-of-band with gcloud
+  # (versioned, uniform bucket-level access, public access prevention enforced).
+  # Mirrors the azurerm backend bootstrap in azure-db-sre-toolkit Day 3.
+  # GCS backend provides native state locking - no separate lock table needed.
+  backend "gcs" {
+    bucket = "gcp-db-sre-toolkit-514321-tfstate"
+    prefix = "gcp-db-sre-toolkit"
+  }
 }
 
 provider "google" {
