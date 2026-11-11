@@ -17,3 +17,13 @@ output "sql_admin_secret_id" {
   description = "Secret Manager secret holding the sqlserver admin password."
   value       = google_secret_manager_secret.sqlserver_admin.secret_id
 }
+
+output "health_check_url" {
+  description = "Health check function URL. Requires an identity token from an allowed invoker."
+  value       = google_cloudfunctions2_function.health_check.service_config[0].uri
+}
+
+output "health_check_schedule" {
+  description = "Cloud Scheduler job that triggers the health check."
+  value       = google_cloud_scheduler_job.health_check.name
+}

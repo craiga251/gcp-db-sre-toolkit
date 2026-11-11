@@ -1,0 +1,5 @@
+functions-framework==3.*
+cloud-sql-python-connector[pytds]>=1.23
+pyOpenSSL>=24.0
+google-auth>=2.30
+requests>=2.32

@@ -31,6 +31,8 @@ ENV/
 *.tfvars
 *.tfvars.json
 crash.log
+# Function source zips built by the archive provider
+**/.build/
 # Saved plans can contain secrets in plain text (e.g. generated passwords)
 tfplan
 *.tfplan

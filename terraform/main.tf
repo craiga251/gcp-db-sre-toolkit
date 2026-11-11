@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 
   # Remote state in a GCS bucket bootstrapped out-of-band with gcloud
@@ -45,6 +49,12 @@ resource "google_project_service" "apis" {
     "sqladmin.googleapis.com",
     "secretmanager.googleapis.com",
     "cloudtrace.googleapis.com", # Query Insights uses it for query plans
+    # Health check function (health_check.tf)
+    "cloudfunctions.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "run.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ])
 
   service            = each.value

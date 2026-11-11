@@ -178,3 +178,104 @@ What it shows:
 - **Instance names can't be reused for up to about a week after deletion**, so a fixed name would make next session's rebuild fail with "already exists". The instance name now ends in a `random_id` suffix (`sql-sre-toolkit-euw2-<hex>`), which is new each time the stack is rebuilt and stable while it exists. Scripts take the name from `terraform output sql_connection_name`, so nothing else changes. The Secret Manager secret keeps a fixed name, because secret names are reusable immediately.
 - Remaining Phase 1: serverless compute (Cloud Run vs Cloud Functions), log/metric sinks, architecture diagram.
 - Consider upgrading to the `hashicorp/google` 6.x provider, which drops `require_ssl`.
+
+# Day 3 — Full rebuild, recovering an orphaned resource, and a scheduled health check (2026-11-11)
+
+## What was built
+
+- **Full stack rebuilt from nothing.** Day 2 ended with everything destroyed. Today's apply rebuilt it from an empty state file, and the random instance-name suffix worked as intended: the new instance is `sql-sre-toolkit-euw2-c8f8`, with no "name already in use" error.
+- **A scheduled database health check** (new file `terraform/health_check.tf`, function code in `functions/db_health_check/`): Cloud Scheduler calls a Python Cloud Function (gen2) every 5 minutes. The function connects to SQL Server through the Cloud SQL connector, runs 7 checks, and writes **one structured JSON log line per run** to Cloud Logging. This is the GCP equivalent of the Azure repo's Azure Functions + storage account, and it's the data source for Phase 4's SLIs.
+
+```
+Cloud Scheduler ──OIDC token──▶ Cloud Function (gen2, python312)
+                                  │  runtime SA: sa-db-health-check
+                                  ├─ Secret Manager (password injected as env var)
+                                  ├─ Cloud SQL connector (IAM + TLS) ──▶ SQL Server
+                                  └─ stdout JSON ──▶ Cloud Logging (jsonPayload)
+```
+
+A sample log entry (trimmed):
+
+```json
+{"component": "db-health-check", "success": true, "connect_ms": 30.6, "total_ms": 74.9,
+ "checks": {"select_1": {"value": 1, "ms": 3.4}, "db_state": {"value": "ONLINE"},
+            "encrypted_connection": {"value": "TRUE"}, "blocked_requests": {"value": 0}, ...},
+ "severity": "INFO", "message": "db-health-check OK in 74.9 ms"}
+```
+
+## Incident: the rebuild lost track of its own database instance
+
+Partway through the apply, the laptop's network connection dropped while Terraform was polling the long-running "create instance" operation:
+
+```
+Error: Error waiting for Create Instance: error while retrieving operation: ...
+wsarecv: An established connection was aborted by the software in your host machine.
+```
+
+The important thing is **what state that leaves you in**. The create request had already been accepted, so Google kept building the instance. But Terraform never got the result back, so the instance was **not written to the state file**. That's an orphaned resource: it exists and costs money, but Terraform doesn't know about it. Running `apply` again would have tried to create a second instance.
+
+Recovery:
+
+1. Checked reality, not just Terraform: `gcloud sql instances list` showed `sql-sre-toolkit-euw2-c8f8` in `PENDING_CREATE`, and `gcloud sql operations list` showed the CREATE operation still running.
+2. Checked state: `terraform state list` had everything *except* the instance.
+3. Waited for the operation to finish (`RUNNABLE` about 4 minutes after it started).
+4. `terraform import google_sql_database_instance.sqlserver projects/<project>/instances/sql-sre-toolkit-euw2-c8f8`
+5. Reviewed the plan before applying. The import produced three expected differences, none of them real changes:
+   - `deletion_protection: true -> false`: a Terraform-only setting that imports default to `true`.
+   - `+ root_password`: the API never returns passwords, so Terraform re-sets the same one.
+   - `+ ssl_mode`: the API reports it differently from how it was configured, so it gets re-applied.
+
+Takeaway: **when an apply fails mid-flight, the state file and reality can disagree, and the cloud is the source of truth.** Compare the two before re-running anything. The `random_id` suffix helped here, because the orphan had a distinctive name that was easy to find and import.
+
+## Design decisions
+
+**Cloud Functions over Cloud Run Job.** A gen2 Cloud Function *is* a Cloud Run service underneath, with Google handling the container build. For a single Python file on a schedule, that's the simplest option, and it maps one-to-one onto the Azure Functions + storage account design. A Cloud Run Job (your own container, Artifact Registry, Dockerfile) remains an option for Phase 3 if PowerShell/dbatools needs to run in the cloud.
+
+**Three service accounts, each with only what its job needs.**
+
+| Identity | Role(s) | Scope |
+|---|---|---|
+| `sa-db-health-check` (runtime) | `cloudsql.client` | project (connect + read instance metadata for the server CA) |
+| | `secretmanager.secretAccessor` | **the one password secret only** |
+| `sa-function-build` | `cloudbuild.builds.builder` | project |
+| `sa-scheduler-invoker` | `run.invoker` | **the health-check function only** |
+
+**The organization policy forced a dedicated build account, which is the better pattern anyway.** `iam.automaticIamGrantsForDefaultServiceAccounts` is enforced, so Google's default build accounts get no roles automatically and a default function build fails with permission errors. Giving the build its own account (`build_config.service_account`) worked first time. The Azure analogy is not letting a deployment run as a broadly-privileged default identity.
+
+**The password reaches the function through Secret Manager, at runtime.** `secret_environment_variables` makes the platform read the secret when an instance starts, using the runtime SA. The value never appears in Terraform config, in `gcloud functions describe` output, or in code.
+
+**Terraform owns the image repository.** By default a gen2 function build pushes to an auto-created `gcf-artifacts` repository that Terraform doesn't manage, so it would survive `terraform destroy` and slowly accumulate image storage. Pointing `build_config.docker_repository` at a Terraform-managed repository (with a keep-latest-3 cleanup policy) means a destroy really does leave nothing behind.
+
+**No "diagnostic settings" needed.** On Azure, each resource needs diagnostic settings to send logs to Log Analytics. On GCP, Cloud SQL, Cloud Functions/Cloud Run and Cloud Scheduler all send logs to Cloud Logging and metrics to Cloud Monitoring automatically. That item from the Azure plan simply doesn't apply here. Routing logs elsewhere (sinks to BigQuery or a longer-retention bucket) is a Phase 4 decision, not a prerequisite.
+
+## Verification
+
+- **Health check via the real path:** `gcloud scheduler jobs run` → function → SQL Server → log entry with `success: true`.
+- **Access control:** an anonymous POST to the function URL returns **403**. My own call (Project Owner) returns 200, because Owner implicitly includes `run.routes.invoke`. So the accurate claim is "no public access, and the scheduler is the only identity granted invoke specifically", not "only the scheduler can call it". The Terraform comment was corrected after testing. A good reminder to test security claims rather than state them.
+- **Laptop path unchanged:** `verify_connection.py` against the new instance: encrypted, `sredb` present.
+- **No drift:** `terraform plan` → no changes (after one fix, below).
+
+## Things that were different from expected
+
+**Cold start vs warm start dominates latency.**
+
+| Run | connect_ms | total_ms |
+|---|---|---|
+| First call (cold: new instance, connector fetching certificates) | 1,352 | 1,507 |
+| Second call (warm instance, connector already set up) | 30.6 | 74.9 |
+
+The checks themselves take 3–20 ms each **from inside the region**, against about 65 ms per round trip from the laptop (Day 2). For Phase 4 that means: alert on availability (`success`) and on query time, but treat connect latency carefully, because a cold start looks like a slow database.
+
+**A perpetual plan diff from a default value.** Setting `retry_config { retry_count = 0 }` on the Cloud Scheduler job produced a diff on *every* plan: zero is the API default, so the API leaves it out of its response, and Terraform keeps trying to add it. Fix: remove the block and comment why. This is the same API-vs-schema gap as Day 2's rejections, from the other direction: Terraform accepts the config, the API accepts it too, but they never agree afterwards.
+
+**An anonymous `curl -X POST` returned 411, not 403.** Google's front end rejected the empty POST ("Length Required") before checking authentication. Adding `Content-Length: 0` gave the real answer, 403.
+
+## Cost
+
+All of the health-check pieces sit inside free tiers at this scale: Cloud Scheduler (3 free jobs per billing account), Cloud Functions/Cloud Run (about 8,600 invocations a month, against 2 million free), Cloud Build (a couple of minutes per deploy), Artifact Registry (one small image, under the 0.5 GB free). The SQL instance remains the only meaningful cost, about £0.11/hour.
+
+## Next up
+
+- Phase 1 is effectively complete: database, serverless compute, logging and the architecture diagram are done. Destroy at end of session.
+- Phase 2: GitHub Actions running `terraform fmt`/`validate`/`plan` on pull requests, authenticating with **Workload Identity Federation** (service account keys are blocked by org policy, see Day 1).
+- Phase 4 (later): log-based metrics from the health-check `jsonPayload`, an availability SLI, and alerting.
