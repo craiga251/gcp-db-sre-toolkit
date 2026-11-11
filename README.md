@@ -58,7 +58,7 @@ There is no direct network path to the database: the instance has a public IP bu
 |-------|--------|-------------|
 | 0 | ✅ Complete | Foundations and tooling setup (gcloud CLI, project, remote state, Terraform provider) |
 | 1 | ✅ Complete | Terraform infrastructure provisioning (Cloud SQL, Secret Manager, scheduled health-check function) |
-| 2 | ⬜ Not started | Git workflow and CI/CD |
+| 2 | ✅ Complete | Git workflow and CI/CD (GitHub Actions + Workload Identity Federation, branch protection on `master`) |
 | 3 | ⬜ Not started | SRE automation scripts |
 | 4 | ⬜ Not started | Observability and SLIs |
 | 5 | ⬜ Not started | AI-augmented operations |
@@ -79,8 +79,9 @@ gcp-db-sre-toolkit/
 ├── scripts/
 │   ├── powershell/         # PowerShell automation scripts (Phase 3)
 │   └── python/             # Connection smoke test, workload generator
+├── terraform/bootstrap/    # Persistent CI identity: WIF pool/provider, plan SA (never destroyed)
 ├── .github/
-│   └── workflows/          # GitHub Actions CI/CD pipelines (Phase 2)
+│   └── workflows/ci.yml    # Lint + fmt/validate/plan for both roots, plan posted to PRs
 ├── docs/
 │   └── terraform-notes.md  # Design decisions and reflections
 ├── README.md
@@ -120,6 +121,8 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 | GCP project | `gcp-db-sre-toolkit-514321` | Console (one-off) | Under org `craigandersonbus1-org`, region `europe-west2` |
 | GCS bucket (Terraform state) | `gcp-db-sre-toolkit-514321-tfstate` | `gcloud` bootstrap (out-of-band) | Versioned, uniform access, public access prevention; persists between sessions |
 | Billing budget | `gcp-db-sre-toolkit guardrail` | `gcloud` (out-of-band) | £25/month, alerts at 50/90/100% + forecast; persists between sessions |
+| Workload Identity Federation | pool `github-actions`, provider `github-oidc` | Terraform, `terraform/bootstrap` | Trusts GitHub OIDC tokens from this repo only (name + numeric ID); persists between sessions |
+| CI service account | `sa-github-plan` | Terraform, `terraform/bootstrap` | Read-only plan access + state-lock write on the state bucket; no infrastructure write |
 
 **Terraform-managed** (applied, verified, and destroyed each session to control cost):
 
@@ -134,6 +137,12 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 | GCS bucket | `<project>-function-source` | Zipped function source |
 | Artifact Registry | `cloud-functions` | Built function images (keep latest 3) |
 | Project services | sqladmin, secretmanager, cloudtrace, cloudfunctions, cloudbuild, run, artifactregistry, cloudscheduler | `disable_on_destroy = false` |
+
+## Workflow
+
+- Work happens on `dev`. Every push runs CI.
+- Changes reach `master` only by pull request from `dev`. Branch protection requires `lint (python)`, `terraform (stack)` and `terraform (bootstrap)` to pass, and applies to admins too.
+- CI runs `terraform plan` only, authenticating with Workload Identity Federation (no stored keys). Apply is a deliberate manual step, because the main stack is applied and destroyed per working session to control cost.
 
 ## Design Decisions
 
