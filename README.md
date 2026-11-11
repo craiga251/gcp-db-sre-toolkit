@@ -10,15 +10,44 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 
 ## Architecture
 
-> _Architecture diagram to be added during Phase 1._
+```mermaid
+flowchart LR
+    subgraph laptop["Engineer workstation"]
+        tf["Terraform"]
+        py["Python scripts<br/>verify / load"]
+    end
+
+    subgraph gcp["GCP project · europe-west2"]
+        state[("GCS bucket<br/>Terraform state")]
+        sched["Cloud Scheduler<br/>every 5 min"]
+        fn["Cloud Function gen2<br/>db-health-check"]
+        sm["Secret Manager<br/>sqlserver password"]
+        sql[("Cloud SQL<br/>SQL Server 2022 Web<br/>no authorized networks")]
+        logs["Cloud Logging<br/>+ Monitoring"]
+        qi["Query Insights"]
+    end
+
+    tf -- "remote state + lock" --> state
+    tf -- "provisions" --> gcp
+    py -- "Cloud SQL connector<br/>IAM + TLS" --> sql
+    py -. "reads password" .-> sm
+    sched -- "OIDC token<br/>sa-scheduler-invoker" --> fn
+    fn -- "Cloud SQL connector<br/>sa-db-health-check" --> sql
+    sm -. "injected at start-up" .-> fn
+    fn -- "structured JSON" --> logs
+    sql -- "logs + metrics<br/>(automatic)" --> logs
+    sql --> qi
+```
+
+There is no direct network path to the database: the instance has a public IP but no authorized networks, so every connection goes through the Cloud SQL connector, which authenticates the caller with IAM before the SQL login happens.
 
 ## Tech Stack
 
 - **Cloud:** Google Cloud Platform (free trial credit)
 - **Infrastructure as Code:** Terraform
 - **CI/CD:** GitHub Actions
-- **Compute:** Cloud Run / Cloud Functions (serverless — TBD during Phase 1)
-- **Database:** Cloud SQL for SQL Server
+- **Compute:** Cloud Functions (gen2) triggered by Cloud Scheduler
+- **Database:** Cloud SQL for SQL Server 2022 (Web edition)
 - **Observability:** Cloud Monitoring, Cloud Logging, Grafana Cloud
 - **Scripting:** PowerShell, Python
 - **AI tooling:** GitHub Copilot, LLM APIs for log analysis
@@ -28,7 +57,7 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 0 | ✅ Complete | Foundations and tooling setup (gcloud CLI, project, remote state, Terraform provider) |
-| 1 | ⬜ Not started | Terraform infrastructure provisioning |
+| 1 | ✅ Complete | Terraform infrastructure provisioning (Cloud SQL, Secret Manager, scheduled health-check function) |
 | 2 | ⬜ Not started | Git workflow and CI/CD |
 | 3 | ⬜ Not started | SRE automation scripts |
 | 4 | ⬜ Not started | Observability and SLIs |
@@ -40,13 +69,16 @@ Terraform fundamentals (providers, state, plan vs apply) are not re-explained he
 ```
 gcp-db-sre-toolkit/
 ├── terraform/              # Infrastructure as Code (Phase 1)
-│   ├── main.tf
+│   ├── main.tf             # Providers, APIs, Cloud SQL, Secret Manager
+│   ├── health_check.tf     # Scheduled health-check function, service accounts, IAM
 │   ├── variables.tf
 │   ├── outputs.tf
 │   └── terraform.tfvars.example
+├── functions/
+│   └── db_health_check/    # Cloud Function source (Python)
 ├── scripts/
 │   ├── powershell/         # PowerShell automation scripts (Phase 3)
-│   └── python/             # Python automation scripts (Phase 3)
+│   └── python/             # Connection smoke test, workload generator
 ├── .github/
 │   └── workflows/          # GitHub Actions CI/CD pipelines (Phase 2)
 ├── docs/
@@ -70,7 +102,7 @@ gcp-db-sre-toolkit/
 
 > _Full setup instructions will be expanded once Phase 0/1 (project setup and infrastructure provisioning) are complete._
 
-**Current state:** Phase 0 complete. Project, APIs, and GCS remote state are in place; `terraform plan` runs clean against an empty stack. Phase 1 (Cloud SQL) is next.
+**Current state:** Phase 1 complete. The full stack (Cloud SQL for SQL Server Web edition, Secret Manager, and a scheduled health-check Cloud Function) applies from scratch, verifies, and destroys cleanly. Health-check results are in Cloud Logging under `jsonPayload.component="db-health-check"`. To check a running instance, install `scripts/python/requirements.txt`, then run `python scripts/python/verify_connection.py` (arguments are in the script header and come from `terraform output`).
 
 Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 
@@ -87,8 +119,21 @@ Planned bootstrap sequence (mirroring the Azure repo's Day 3 pattern):
 |----------|------|------------------|-------|
 | GCP project | `gcp-db-sre-toolkit-514321` | Console (one-off) | Under org `craigandersonbus1-org`, region `europe-west2` |
 | GCS bucket (Terraform state) | `gcp-db-sre-toolkit-514321-tfstate` | `gcloud` bootstrap (out-of-band) | Versioned, uniform access, public access prevention; persists between sessions |
+| Billing budget | `gcp-db-sre-toolkit guardrail` | `gcloud` (out-of-band) | £25/month, alerts at 50/90/100% + forecast; persists between sessions |
 
-No Terraform-managed resources yet. Phase 1 resources are applied, verified, and destroyed each session to control cost.
+**Terraform-managed** (applied, verified, and destroyed each session to control cost):
+
+| Resource | Name | Notes |
+|----------|------|-------|
+| Cloud SQL for SQL Server | `sql-sre-toolkit-euw2-<random hex>` | SQL Server 2022 Web, `db-custom-1-3840`, zonal, 10 GB SSD (autoresize ≤20 GB), backups, Query Insights. Public IP with no authorized networks: connector/Auth Proxy only. |
+| Database | `sredb` | Application database |
+| Secret Manager secret | `sql-sre-toolkit-euw2-sqlserver-password` | Generated admin password |
+| Cloud Function (gen2) | `db-health-check` | Python 3.12, 512 MB, scale 0–1; structured JSON results to Cloud Logging |
+| Cloud Scheduler job | `db-health-check-every-5m` | Calls the function with an OIDC token |
+| Service accounts | `sa-db-health-check`, `sa-function-build`, `sa-scheduler-invoker` | Runtime / build / invoker, each with only the roles it needs |
+| GCS bucket | `<project>-function-source` | Zipped function source |
+| Artifact Registry | `cloud-functions` | Built function images (keep latest 3) |
+| Project services | sqladmin, secretmanager, cloudtrace, cloudfunctions, cloudbuild, run, artifactregistry, cloudscheduler | `disable_on_destroy = false` |
 
 ## Design Decisions
 
