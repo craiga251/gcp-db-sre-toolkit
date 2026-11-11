@@ -36,6 +36,10 @@ crash.log
 # Saved plans can contain secrets in plain text (e.g. generated passwords)
 tfplan
 *.tfplan
+# CI plan artifacts
+plan.log
+plan.txt
+plan.md
 crash.*.log
 override.tf
 override.tf.json

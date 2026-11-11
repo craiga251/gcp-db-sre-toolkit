@@ -43,9 +43,7 @@ CHECKS = {
     "select_1": "SELECT 1",
     "edition": "SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128))",
     "db_state": "SELECT state_desc FROM sys.databases WHERE name = DB_NAME()",
-    "encrypted_connection": (
-        "SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID"
-    ),
+    "encrypted_connection": ("SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID"),
     "user_sessions": "SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1",
     "blocked_requests": "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id <> 0",
     "db_size_mb": "SELECT CAST(SUM(size) * 8 / 1024.0 AS decimal(10,1)) FROM sys.database_files",
@@ -130,11 +128,7 @@ def health_check(request):
     result["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
     # Cloud Logging maps "severity" and "message" from a JSON log line.
     result["severity"] = "INFO" if result["success"] else "ERROR"
-    result["message"] = (
-        f"db-health-check {'OK' if result['success'] else 'FAILED'} "
-        f"in {result['total_ms']} ms"
-    )
+    result["message"] = f"db-health-check {'OK' if result['success'] else 'FAILED'} in {result['total_ms']} ms"
     print(json.dumps(result, default=str), flush=True)
 
-    return (json.dumps(result, default=str), 200 if result["success"] else 503,
-            {"Content-Type": "application/json"})
+    return (json.dumps(result, default=str), 200 if result["success"] else 503, {"Content-Type": "application/json"})

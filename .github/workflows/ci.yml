@@ -1,0 +1,139 @@
+# CI: lint Python, and fmt/validate/plan both Terraform roots.
+#
+# - Runs on every PR to master and every push to dev. No path filters: these
+#   checks are required by branch protection, and a required check that never
+#   runs leaves the PR blocked as "pending".
+# - Authenticates to GCP with Workload Identity Federation (no stored keys).
+#   The plan service account is read-only apart from the state-lock object.
+# - Plan only. Apply stays a manual, deliberate step (cost discipline: the
+#   main stack is applied and destroyed per working session).
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.17.4
+
+      - name: ruff check
+        run: ruff check scripts functions
+
+      - name: ruff format --check
+        run: ruff format --check scripts functions
+
+  terraform:
+    name: terraform (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # mint the GitHub OIDC token for WIF
+      pull-requests: write  # post the plan as a PR comment
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: stack
+            dir: terraform
+          - name: bootstrap
+            dir: terraform/bootstrap
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_project_id: gcp-db-sre-toolkit-514321
+      TF_VAR_owner: craig-anderson
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.4
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -diff
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PLAN_SA }}
+
+      - name: terraform init
+        # readonly: CI must use exactly the provider versions/hashes committed
+        # in .terraform.lock.hcl, never silently upgrade them.
+        run: terraform init -lockfile=readonly
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -no-color -lock-timeout=5m -detailed-exitcode -out=tfplan > plan.log 2>&1
+          code=$?
+          set -e
+          cat plan.log
+          # 0 = no changes, 2 = changes present (both fine), 1 = error
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          terraform show -no-color tfplan > plan.txt
+          summary=$(grep -E '^(Plan:|No changes\.)' plan.log | tail -1)
+          echo "summary=${summary:-see log}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### terraform plan: ${{ matrix.name }}"
+            echo ""
+            echo "**${summary}**"
+            echo ""
+            echo '<details><summary>Full plan</summary>'
+            echo ""
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+            echo '</details>'
+          } > plan.md
+          cat plan.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ matrix.dir }}/plan.md
+          MARKER: "<!-- terraform-plan-${{ matrix.name }} -->"
+        with:
+          script: |
+            const fs = require('fs');
+            const body = `${process.env.MARKER}\n${fs.readFileSync(process.env.PLAN_FILE, 'utf8')}\n\n_Plan only. Apply is a manual step. When the stack has been destroyed at the end of a session, expect everything to show as "to add"._`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body.startsWith(process.env.MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }

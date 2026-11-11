@@ -1,0 +1,7 @@
+# Lint config for scripts/ and functions/. Repo-local so CI and laptops agree.
+line-length = 120
+target-version = "py310"
+
+[lint]
+# pycodestyle, pyflakes, import order, bugbear, pyupgrade
+select = ["E", "F", "I", "B", "UP"]

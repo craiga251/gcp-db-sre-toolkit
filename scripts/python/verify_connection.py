@@ -24,12 +24,8 @@ CHECKS = {
     "version": "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64))",
     "edition": "SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128))",
     "current_database": "SELECT DB_NAME()",
-    "encrypted_connection": (
-        "SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID"
-    ),
-    "user_databases": (
-        "SELECT STRING_AGG(name, ', ') FROM sys.databases WHERE database_id > 4"
-    ),
+    "encrypted_connection": ("SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID"),
+    "user_databases": ("SELECT STRING_AGG(name, ', ') FROM sys.databases WHERE database_id > 4"),
 }
 
 
