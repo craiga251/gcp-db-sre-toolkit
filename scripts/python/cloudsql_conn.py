@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import google.auth
 from google.auth.transport.requests import AuthorizedSession
@@ -75,7 +75,9 @@ class CloudSqlServer:
 
 
 @contextmanager
-def cloudsql_server(connection_name: str, secret_id: str, database: str, user: str = "sqlserver") -> Iterator[CloudSqlServer]:
+def cloudsql_server(
+    connection_name: str, secret_id: str, database: str, user: str = "sqlserver"
+) -> Iterator[CloudSqlServer]:
     server = CloudSqlServer(connection_name, secret_id, database, user)
     try:
         yield server
@@ -85,7 +87,11 @@ def cloudsql_server(connection_name: str, secret_id: str, database: str, user: s
 
 def add_connection_args(parser) -> None:
     """Standard arguments; values come from `terraform output`."""
-    parser.add_argument("--connection-name", required=True, help="project:region:instance (terraform output sql_connection_name)")
-    parser.add_argument("--secret-id", required=True, help="Secret Manager secret id (terraform output sql_admin_secret_id)")
+    parser.add_argument(
+        "--connection-name", required=True, help="project:region:instance (terraform output sql_connection_name)"
+    )
+    parser.add_argument(
+        "--secret-id", required=True, help="Secret Manager secret id (terraform output sql_admin_secret_id)"
+    )
     parser.add_argument("--database", default="sredb")
     parser.add_argument("--user", default="sqlserver")

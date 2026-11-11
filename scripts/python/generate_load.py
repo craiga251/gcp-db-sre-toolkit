@@ -110,8 +110,7 @@ WORKLOAD = {
     ),
     "orders_by_customer (missing index)": (
         25,
-        "SELECT order_id, order_date, amount, status FROM dbo.orders "
-        "WHERE customer_id = %s ORDER BY order_date DESC",
+        "SELECT order_id, order_date, amount, status FROM dbo.orders WHERE customer_id = %s ORDER BY order_date DESC",
         lambda: (rand_customer(),),
     ),
     "revenue_by_region_30d": (
@@ -129,8 +128,7 @@ WORKLOAD = {
     ),
     "insert_order": (
         10,
-        "INSERT dbo.orders (customer_id, order_date, amount, status) "
-        "VALUES (%s, SYSUTCDATETIME(), %s, 'NEW')",
+        "INSERT dbo.orders (customer_id, order_date, amount, status) VALUES (%s, SYSUTCDATETIME(), %s, 'NEW')",
         lambda: (rand_customer(), round(random.uniform(5, 500), 2)),
     ),
     "update_status": (
@@ -180,10 +178,7 @@ def run_load(server, minutes: float, workers: int) -> None:
     errors: list = []
     lock = threading.Lock()
     stop_at = time.monotonic() + minutes * 60
-    threads = [
-        threading.Thread(target=worker, args=(c, stop_at, results, errors, lock), daemon=True)
-        for c in conns
-    ]
+    threads = [threading.Thread(target=worker, args=(c, stop_at, results, errors, lock), daemon=True) for c in conns]
     print(f"Running {workers} workers for {minutes} min...")
     for t in threads:
         t.start()

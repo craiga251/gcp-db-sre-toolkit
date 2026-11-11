@@ -279,3 +279,71 @@ All of the health-check pieces sit inside free tiers at this scale: Cloud Schedu
 - Phase 1 is effectively complete: database, serverless compute, logging and the architecture diagram are done. Destroy at end of session.
 - Phase 2: GitHub Actions running `terraform fmt`/`validate`/`plan` on pull requests, authenticating with **Workload Identity Federation** (service account keys are blocked by org policy, see Day 1).
 - Phase 4 (later): log-based metrics from the health-check `jsonPayload`, an availability SLI, and alerting.
+
+# Day 3, part 2 — Phase 2: CI with Workload Identity Federation, and branch protection (2026-11-11)
+
+## What was built
+
+- **`terraform/bootstrap/`**: a second, small Terraform root that is **never destroyed**. It holds a Workload Identity Federation pool and provider for GitHub Actions, and a plan-only service account, `sa-github-plan`.
+- **`.github/workflows/ci.yml`**: runs on every push to `dev` and every PR to `master`. Three jobs:
+  - `lint (python)`: `ruff check` + `ruff format --check` on `scripts/` and `functions/`, using a repo-local `ruff.toml`
+  - `terraform (stack)` and `terraform (bootstrap)`: `fmt -check`, `init -lockfile=readonly`, `validate`, `plan`, with the plan posted to the job summary and as a PR comment that updates in place rather than piling up new comments
+- **Branch protection on `master`**: PR required, all three checks must pass, applies to admins too, no force-push, no deletion, conversations must be resolved. No approvals required, because GitHub won't let you approve your own PR and requiring one would lock out a solo maintainer.
+- **Repo variables** `GCP_WIF_PROVIDER` and `GCP_PLAN_SA`. These are variables, not secrets, because neither value is sensitive: they identify *who* to impersonate, while the trust rule decides *whether* that's allowed.
+
+## How CI gets into GCP with no stored credentials
+
+```
+GitHub Actions job (permissions: id-token: write)
+  └─ GitHub OIDC token: signed JWT with claims repository, repository_id, ref, event_name, ...
+       └─ Google STS: is this token from a trusted issuer AND does attribute_condition pass?
+            └─ federated identity: principalSet://.../attribute.repository/craiga251/gcp-db-sre-toolkit
+                 └─ roles/iam.workloadIdentityUser on sa-github-plan → short-lived access token
+```
+
+Nothing long-lived exists anywhere: no JSON key in GitHub secrets, and nothing to rotate or leak. The org policy `iam.disableServiceAccountKeyCreation` (Day 1) would have blocked keys anyway, but this would be the right design even without it. The Azure equivalent is a federated credential on an Entra app registration, which follows the same OIDC pattern.
+
+**The trust is pinned twice.** The provider's `attribute_condition` requires `assertion.repository == 'craiga251/gcp-db-sre-toolkit'` **and** `assertion.repository_id == '1306402255'`. Names can be reused: if the repo were deleted and someone re-created one with the same name, a name-only rule would trust *their* workflows. The numeric ID can't be reused.
+
+## Least privilege for a plan-only identity
+
+| Grant | Why |
+|---|---|
+| `roles/viewer` (project) | Refresh reads every resource's config |
+| `roles/iam.securityReviewer` (project) | Refresh also reads IAM policies on resources (secret, Cloud Run service), which Viewer doesn't fully cover |
+| `roles/secretmanager.secretAccessor` **with an IAM condition** limited to the SQL admin secret | Refreshing `google_secret_manager_secret_version` calls `AccessSecretVersion`. A project-level grant with a condition is used because the secret itself is destroyed and re-created with the main stack, so a binding *on* the secret would vanish with it. (The value is also in the state file, which CI can read, so this adds no new exposure.) |
+| `roles/storage.objectAdmin` **on the state bucket only** | `plan` takes the state lock, which writes and deletes a lock object |
+
+CI has **no write access to any infrastructure**. Applying stays a deliberate, manual step from the laptop. That's a cost decision for now: apply is how money gets spent, so it isn't automated. In a team, the next step would be a separate apply identity, used only from `master` behind a GitHub Environment approval.
+
+## Why two Terraform roots
+
+The main stack is destroyed at the end of every session. If the CI identity lived in it, CI couldn't run while the stack was down, which is most of the time. Splitting by **lifecycle** solves that:
+
+| Root | Lifecycle | State prefix | Contents |
+|---|---|---|---|
+| `terraform/bootstrap` | Persistent, rarely changes, free | `gcp-db-sre-toolkit/bootstrap` | WIF pool/provider, CI service account and its IAM |
+| `terraform/` | Applied and destroyed per session | `gcp-db-sre-toolkit` | Cloud SQL, secret, function, scheduler, ... |
+
+Separate state means a `terraform destroy` of the stack physically can't touch the CI identity. The same split is common in real platforms: a foundation layer (identity, networking, state) under per-environment workload stacks.
+
+## Things that were different from expected
+
+**The first CI run failed with `iam.serviceAccounts.getAccessToken` denied, and re-running fixed it.** The run started about a minute after the `workloadIdentityUser` binding was created, and IAM changes can take a few minutes to apply everywhere. The useful part was reading the error properly: getting as far as `getAccessToken` meant the GitHub token *had* been accepted by STS, so the trust rule was correct and only the impersonation permission hadn't arrived yet. Confirmed the binding with `gcloud iam service-accounts get-iam-policy`, re-ran the failed jobs with `gh run rerun --failed`, and all three passed. Lesson: after creating IAM bindings in automation, expect a short delay before they work, rather than assuming the config is wrong.
+
+**Required checks and path filters don't mix.** It's tempting to run Terraform jobs only when `terraform/**` changes. But a required check whose workflow never starts sits at "Expected — waiting" forever and blocks the PR. So the workflow has no path filters. The jobs are quick (about a minute), so running them every time costs little.
+
+**Provider lock files from Windows aren't enough for Linux CI.** `terraform init` on Windows records full (`h1:`) hashes only for `windows_amd64`. With `-lockfile=readonly`, a Linux runner could fail to verify the providers. `terraform providers lock -platform=linux_amd64 -platform=windows_amd64` records both. `-lockfile=readonly` is deliberate: CI must use exactly the committed provider builds and never silently upgrade.
+
+**Ruff picked up a stricter config from a parent folder** on the laptop (rules like `BLE001` that aren't defaults), so laptop and CI results would have differed. A repo-local `ruff.toml` makes the rules part of the repo.
+
+## Verification
+
+- First CI run on `dev` (after re-running the failed jobs): `lint (python)` ✅, `terraform (stack)` ✅ (`Plan: 26 to add`, correct because the stack was destroyed), `terraform (bootstrap)` ✅ (`No changes`, so the applied bootstrap matches the code).
+- Branch protection read back through the API: the three required checks, admins included, 0 approvals, no force-push or deletion.
+- The PR from `dev` to `master` for this work is the first change to go through the new process.
+
+## Next up
+
+- Phase 3: SRE automation scripts (PowerShell/dbatools and Python), e.g. backup verification, index/statistics health, blocking reports, run against the rebuilt stack.
+- Possible Phase 2 follow-ups: a manual `workflow_dispatch` apply job using a separate, more privileged SA behind a GitHub Environment with required reviewers; `tflint`/`checkov` static analysis.
